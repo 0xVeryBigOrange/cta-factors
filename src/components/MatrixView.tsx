@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CATEGORY_META, factorsFor, type Derivatives } from "../factors/catalog";
+import { CATEGORY_META, factorsFor, type Derivatives, type PeerReturn } from "../factors/catalog";
 import { evaluate } from "../factors/evaluate";
 import type { SeriesSnap } from "../data/engine";
 import type { Market, Timeframe } from "../types";
@@ -8,9 +8,11 @@ import { cellTone, formatScore } from "../lib/format";
 import type { Factor } from "../factors/catalog";
 
 type Props = {
+  symbol: string;
   market: Market;
   series: Record<Timeframe, SeriesSnap | undefined>;
   derivatives: Derivatives | null;
+  peers: Partial<Record<Timeframe, PeerReturn[]>>;
   derivStatus?: "loading" | "ready" | "error" | "idle";
   onOpen: (factor: Factor) => void;
 };
@@ -20,7 +22,13 @@ export function MatrixView(props: Props) {
   const columns = TIMEFRAMES.map((tf) => {
     const snap = props.series[tf.id];
     const ready = snap?.status === "ready" && snap.candles.length > 0;
-    const cells = ready ? evaluate(snap.candles, { timeframe: tf.id, derivatives: props.derivatives }, props.market) : [];
+    const cells = ready
+      ? evaluate(
+          snap.candles,
+          { timeframe: tf.id, symbol: props.symbol, derivatives: props.derivatives, peers: props.peers[tf.id] },
+          props.market,
+        )
+      : [];
     return { tf, snap, cells };
   });
 

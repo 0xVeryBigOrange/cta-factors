@@ -496,6 +496,146 @@ export function lastFinite(values: number[], back = 0): number | null {
   return values[index];
 }
 
+/** Stdev of recent log returns. Null when there are fewer than 8 usable returns. */
+export function realizedVol(values: number[], lookback = 32): number | null {
+  const start = Math.max(1, values.length - lookback);
+  const rets: number[] = [];
+  for (let i = start; i < values.length; i++) {
+    if (values[i - 1] <= 0 || values[i] <= 0) continue;
+    rets.push(Math.log(values[i] / values[i - 1]));
+  }
+  if (rets.length < 8) return null;
+  const mean = rets.reduce((sum, value) => sum + value, 0) / rets.length;
+  const variance = rets.reduce((sum, value) => sum + (value - mean) ** 2, 0) / rets.length;
+  return Math.sqrt(variance);
+}
+
+/** ATR% and return volatility, floored so a smooth trend does not divide by ~0. */
+export function barVol(candles: Candle[], lookback = 32): number {
+  const close = candles[candles.length - 1]?.close ?? 0;
+  const range = lastFinite(atr(candles, 14));
+  const atrPct = range && close ? range / close : 0;
+  const rv = realizedVol(candles.map((candle) => candle.close), lookback) ?? 0;
+  return Math.max(atrPct, rv, 1e-4);
+}
+
+/** EWM standard deviation of price changes. Span matches Carver's vol_lookback. */
+export function ewmStdChange(values: number[], span = 32): number | null {
+  if (values.length < span + 1) return null;
+  const alpha = 2 / (span + 1);
+  let mean = values[1] - values[0];
+  let variance = 0;
+  for (let i = 2; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const prev = mean;
+    mean = alpha * diff + (1 - alpha) * mean;
+    variance = (1 - alpha) * (variance + alpha * (diff - prev) ** 2);
+  }
+  const sd = Math.sqrt(variance);
+  return sd > 1e-12 ? sd : null;
+}
+
+/** EWM of absolute price changes, the volatility in Lempérière et al. */
+export function ewmAbsChange(values: number[], span: number): number | null {
+  if (values.length < Math.max(8, Math.floor(span / 2))) return null;
+  const alpha = 2 / (span + 1);
+  let level = Math.abs(values[1] - values[0]);
+  for (let i = 2; i < values.length; i++) {
+    level = alpha * Math.abs(values[i] - values[i - 1]) + (1 - alpha) * level;
+  }
+  return level > 0 ? level : null;
+}
+
+export function returnMoments(
+  values: number[],
+  lookback: number,
+): { skew: number; excessKurt: number; upside: number } | null {
+  const start = Math.max(1, values.length - lookback);
+  const rets: number[] = [];
+  for (let i = start; i < values.length; i++) {
+    if (values[i - 1] <= 0 || values[i] <= 0) continue;
+    rets.push(Math.log(values[i] / values[i - 1]));
+  }
+  if (rets.length < 12) return null;
+  const count = rets.length;
+  const mean = rets.reduce((sum, value) => sum + value, 0) / count;
+  let m2 = 0;
+  let m3 = 0;
+  let m4 = 0;
+  let up = 0;
+  let total = 0;
+  for (const ret of rets) {
+    const delta = ret - mean;
+    m2 += delta * delta;
+    m3 += delta * delta * delta;
+    m4 += delta ** 4;
+    const square = ret * ret;
+    total += square;
+    if (ret > 0) up += square;
+  }
+  m2 /= count;
+  m3 /= count;
+  m4 /= count;
+  if (m2 <= 0 || total <= 0) return null;
+  return { skew: m3 / m2 ** 1.5, excessKurt: m4 / (m2 * m2) - 3, upside: up / total };
+}
+
+export function pearson(xs: number[], ys: number[]): number | null {
+  if (xs.length !== ys.length || xs.length < 8) return null;
+  const count = xs.length;
+  const meanX = xs.reduce((sum, value) => sum + value, 0) / count;
+  const meanY = ys.reduce((sum, value) => sum + value, 0) / count;
+  let num = 0;
+  let varX = 0;
+  let varY = 0;
+  for (let i = 0; i < count; i++) {
+    const dx = xs[i] - meanX;
+    const dy = ys[i] - meanY;
+    num += dx * dy;
+    varX += dx * dx;
+    varY += dy * dy;
+  }
+  if (varX === 0 || varY === 0) return null;
+  return num / Math.sqrt(varX * varY);
+}
+
+/** t-statistic of the slope of log price on time. */
+export function logPriceTStat(values: number[], end: number, period: number): number | null {
+  const start = end - period + 1;
+  if (start < 0 || period < 8) return null;
+  const y: number[] = [];
+  for (let i = start; i <= end; i++) {
+    if (!(values[i] > 0)) return null;
+    y.push(Math.log(values[i]));
+  }
+  const count = y.length;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  for (let i = 0; i < count; i++) {
+    sumX += i;
+    sumY += y[i];
+    sumXY += i * y[i];
+    sumXX += i * i;
+  }
+  const meanX = sumX / count;
+  const slopeNumerator = sumXY - sumX * sumY / count;
+  const sxx = sumXX - sumX * meanX;
+  if (sxx <= 0) return null;
+  const slope = slopeNumerator / sxx;
+  const intercept = sumY / count - slope * meanX;
+  let sse = 0;
+  for (let i = 0; i < count; i++) {
+    const error = y[i] - (intercept + slope * i);
+    sse += error * error;
+  }
+  if (count <= 2) return null;
+  const se = Math.sqrt(sse / (count - 2) / sxx);
+  if (!(se > 0)) return slope > 0 ? Infinity : slope < 0 ? -Infinity : 0;
+  return slope / se;
+}
+
 export function midpoint(candles: Candle[], end: number, period: number): number | null {
   const start = end - period + 1;
   if (start < 0) return null;

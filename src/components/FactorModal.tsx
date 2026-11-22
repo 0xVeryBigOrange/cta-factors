@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { Factor } from "../factors/catalog";
+import type { FactorStat } from "../factors/history";
 import type { Reading, Timeframe } from "../types";
 import { TIMEFRAMES } from "../types";
 import { cellTone, formatScore } from "../lib/format";
@@ -7,6 +8,7 @@ import { cellTone, formatScore } from "../lib/format";
 type Props = {
   factor: Factor;
   readings: Partial<Record<Timeframe, Reading | null>>;
+  history: Partial<Record<Timeframe, FactorStat>>;
   onClose: () => void;
 };
 
@@ -41,6 +43,12 @@ export function FactorModal(props: Props) {
         <p>{props.factor.summary}</p>
         <h3>信号规则</h3>
         <p>{props.factor.rule}</p>
+        {props.factor.citation && (
+          <>
+            <h3>文献</h3>
+            <p>{props.factor.citation}</p>
+          </>
+        )}
         <h3>当前各周期</h3>
         <ul className="mini-readings">
           {TIMEFRAMES.map((tf) => {
@@ -56,6 +64,23 @@ export function FactorModal(props: Props) {
                 ) : (
                   <b className="na-pill">无数据</b>
                 )}
+              </li>
+            );
+          })}
+        </ul>
+        <h3>最近样本</h3>
+        <p className="muted">向前 4 根 K 线。样本短，只说明这段历史里信号和随后涨跌是否同向。</p>
+        <ul className="mini-readings">
+          {TIMEFRAMES.map((tf) => {
+            const stat = props.history[tf.id];
+            return (
+              <li key={tf.id}>
+                <span>{tf.label}</span>
+                <b className="na-pill">
+                  {stat && stat.samples >= 8
+                    ? `命中 ${stat.hitRate == null ? "—" : `${Math.round(stat.hitRate * 100)}%`} · IC ${stat.ic == null ? "—" : stat.ic.toFixed(2)}`
+                    : "样本不足"}
+                </b>
               </li>
             );
           })}

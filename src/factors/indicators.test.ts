@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Candle } from "../types";
 import { ema, rsi, sma } from "./indicators";
-import { aggregate, longProbability } from "./aggregate";
+import { aggregate, forecastDiversificationMultiplier, longProbability } from "./aggregate";
+import { carverForecast } from "./score";
+import { factorHistory } from "./history";
 import { evaluateAggregate } from "./evaluate";
 import { FACTORS } from "./catalog";
 
@@ -100,9 +102,40 @@ describe("documented factors", () => {
       expect(readme).toContain(factor.name);
       expect(readme).toContain(factor.abbr);
       expect(readme).toContain(factor.summary.slice(0, 24));
+      if (factor.citation) expect(readme).toContain(factor.citation);
     }
+    expect(readme).toContain("@0xVeryBigOrange");
+    expect(readme).toContain("https://x.com/0xVeryBigOrange");
   });
 });
+
+describe("forecast scaling", () => {
+  it("caps a Carver forecast at ±20 and maps it onto ±1", () => {
+    expect(carverForecast(100, 5)).toBeCloseTo(1);
+    expect(carverForecast(-100, 5)).toBeCloseTo(-1);
+    expect(carverForecast(2, 5) * 20).toBeCloseTo(10);
+  });
+
+  it("uses a diversification multiplier that shrinks when categories correlate", () => {
+    expect(forecastDiversificationMultiplier(1)).toBe(1);
+    expect(forecastDiversificationMultiplier(6, 0.35)).toBeCloseTo(Math.sqrt(6 / (1 + 5 * 0.35)), 6);
+    expect(forecastDiversificationMultiplier(6, -0.4)).toBeCloseTo(Math.sqrt(6), 6);
+    expect(forecastDiversificationMultiplier(40, 0)).toBe(2.5);
+  });
+
+  it("reads vol-scaled time-series momentum as long on a steady rise", () => {
+    const factor = FACTORS.find((item) => item.id === "tsmom-120");
+    expect(factor?.compute(upTrend(), { timeframe: "1h" })?.direction).toBe("long");
+    const stat = factorHistory(upTrend(), factor!, { timeframe: "1h" });
+    expect(stat.samples).toBeGreaterThanOrEqual(8);
+    expect(stat.hitRate ?? 0).toBeGreaterThan(0.6);
+    if (stat.ic != null) expect(stat.ic).toBeGreaterThan(0);
+  });
+});
+
+function upTrend() {
+  return trend(280, 100, 1);
+}
 
 describe("category-balanced probability", () => {
   it("maps a zero score to 50% and saturates the extremes", () => {
