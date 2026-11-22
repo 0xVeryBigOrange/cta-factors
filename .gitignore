@@ -1,0 +1,7 @@
+node_modules
+dist
+.vite
+*.local
+.DS_Store
+public/data/equities/*.json
+public/data/equities/index.json

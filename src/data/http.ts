@@ -1,0 +1,110 @@
+export class HttpError extends Error {
+  readonly status: number;
+  readonly source: string;
+
+  constructor(message: string, status: number, source: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+    this.source = source;
+  }
+}
+
+export class RequestGate {
+  private chain: Promise<void> = Promise.resolve();
+  private nextAt = 0;
+
+  constructor(private readonly gapMs: number) {}
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(async () => {
+      const wait = this.nextAt - Date.now();
+      if (wait > 0) await sleep(wait);
+      this.nextAt = Date.now() + this.gapMs;
+      return task();
+    });
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+}
+
+export const gates = {
+  binance: new RequestGate(110),
+  okx: new RequestGate(150),
+  gate: new RequestGate(140),
+  bitget: new RequestGate(140),
+  kraken: new RequestGate(280),
+  coinbase: new RequestGate(180),
+  gecko: new RequestGate(1200),
+  yahoo: new RequestGate(220),
+  tencent: new RequestGate(180),
+};
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isAbort(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : !!error && typeof error === "object" && (error as { name?: string }).name === "AbortError";
+}
+
+export function sourceIsDown(error: unknown): boolean {
+  if (error instanceof HttpError) {
+    return error.status === 0 || error.status === 403 || error.status === 418 || error.status === 429 || error.status === 451 || error.status >= 500;
+  }
+  return !isAbort(error);
+}
+
+export async function fetchJson(
+  url: string,
+  options: { source: string; gate: RequestGate; signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<unknown> {
+  return options.gate.run(async () => {
+    let last: Error | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      try {
+        const response = await fetch(url, {
+          signal: options.signal,
+          headers: { Accept: "application/json", ...options.headers },
+        });
+        if (response.status === 429 || response.status === 418) {
+          last = new HttpError(`${options.source} 频率限制`, response.status, options.source);
+          await sleep(800 * (attempt + 1));
+          continue;
+        }
+        if (!response.ok) throw new HttpError(`${options.source} ${response.status}`, response.status, options.source);
+        return await response.json();
+      } catch (error) {
+        if (error instanceof HttpError && error.status !== 429 && error.status !== 418) throw error;
+        if (isAbort(error)) throw error;
+        last = error instanceof Error ? error : new Error(String(error));
+        await sleep(250);
+      }
+    }
+    throw last ?? new HttpError(`${options.source} 请求失败`, 0, options.source);
+  });
+}
+
+export async function fetchText(
+  url: string,
+  options: { source: string; gate: RequestGate; signal?: AbortSignal },
+): Promise<string> {
+  return options.gate.run(async () => {
+    const response = await fetch(url, { signal: options.signal });
+    if (!response.ok) throw new HttpError(`${options.source} ${response.status}`, response.status, options.source);
+    const buffer = await response.arrayBuffer();
+    const type = response.headers.get("content-type") ?? "";
+    const encoding = /gbk|gb2312/i.test(type) ? "gbk" : "utf-8";
+    try {
+      return new TextDecoder(encoding).decode(buffer);
+    } catch {
+      return new TextDecoder().decode(buffer);
+    }
+  });
+}
