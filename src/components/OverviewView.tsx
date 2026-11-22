@@ -104,7 +104,17 @@ export function OverviewView(props: Props) {
         </div>
         <span className="muted">{sorted.length} 个代码</span>
       </div>
-      <div className="matrix-scroll">
+      <div className="overview-sort" aria-label="排序">
+        <button type="button" className={sortKey === "symbol" ? "on" : ""} onClick={() => toggleSort("symbol")}>
+          代码 {sortKey === "symbol" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+        </button>
+        {TIMEFRAMES.map((tf) => (
+          <button key={tf.id} type="button" className={sortKey === tf.id ? "on" : ""} onClick={() => toggleSort(tf.id)}>
+            {tf.label} {sortKey === tf.id ? (sortDir === "asc" ? "↑" : "↓") : ""}
+          </button>
+        ))}
+      </div>
+      <div className="matrix-scroll overview-scroll">
         <table className="overview-table">
           <thead>
             <tr>
@@ -146,6 +156,29 @@ export function OverviewView(props: Props) {
           </tbody>
         </table>
       </div>
+      <ul className="overview-cards">
+        {sorted.map((row) => (
+          <li key={itemKey(row.item)} className="overview-card">
+            <button type="button" className="overview-card-head" onClick={() => props.onOpen(row.item)}>
+              <b>{row.item.symbol}</b>
+              <small>
+                {row.item.market === "crypto" ? "加密" : "美股"} · {displayName(row.item.market, row.item.symbol)}
+              </small>
+            </button>
+            <div className="overview-probs">
+              {TIMEFRAMES.map((tf) => {
+                const value = row.probs[tf.id];
+                return (
+                  <div key={tf.id} className="overview-prob" style={{ color: probabilityTone(value) }}>
+                    <span>{tf.label}</span>
+                    <b>{formatProbability(value)}</b>
+                  </div>
+                );
+              })}
+            </div>
+          </li>
+        ))}
+      </ul>
       {!sorted.length && <p className="empty">没有符合筛选的代码。可以换一个周期，或等行情加载完。</p>}
     </div>
   );
