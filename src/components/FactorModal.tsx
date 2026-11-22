@@ -18,7 +18,12 @@ export function FactorModal(props: Props) {
       if (event.key === "Escape") props.onClose();
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+    };
   }, [props]);
 
   return (
@@ -35,10 +40,11 @@ export function FactorModal(props: Props) {
             <p className="eyebrow">{props.factor.abbr}</p>
             <h2 id="factor-title">{props.factor.name}</h2>
           </div>
-          <button type="button" className="icon-btn" onClick={props.onClose} aria-label="关闭">
+          <button type="button" className="icon-btn modal-close" onClick={props.onClose} aria-label="关闭">
             ×
           </button>
         </header>
+        <div className="modal-body">
         <h3>定义</h3>
         <p>{props.factor.summary}</p>
         <h3>信号规则</h3>
@@ -85,6 +91,7 @@ export function FactorModal(props: Props) {
             );
           })}
         </ul>
+        </div>
       </div>
     </div>
   );

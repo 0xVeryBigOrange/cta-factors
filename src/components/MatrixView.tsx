@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, useState } from "react";
 import { CATEGORY_META, factorsFor, type Derivatives, type PeerReturn } from "../factors/catalog";
 import { evaluate } from "../factors/evaluate";
 import type { SeriesSnap } from "../data/engine";
@@ -18,6 +18,7 @@ type Props = {
 };
 
 export function MatrixView(props: Props) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const factors = factorsFor(props.market);
   const columns = TIMEFRAMES.map((tf) => {
     const snap = props.series[tf.id];
@@ -33,7 +34,9 @@ export function MatrixView(props: Props) {
   });
 
   return (
-    <div className="matrix-scroll">
+    <div className="matrix-block">
+      <p className="scroll-hint">左右滑动查看其他周期，点分组名可收起。</p>
+      <div className="matrix-scroll">
       <table className="matrix">
         <thead>
           <tr>
@@ -59,11 +62,26 @@ export function MatrixView(props: Props) {
           </tr>
         </thead>
         <tbody>
-          {CATEGORY_META.filter((category) => factors.some((factor) => factor.category === category.id)).map((category) => (
-            <Group key={category.id} name={category.name} span={TIMEFRAMES.length + 1}>
-              {factors
-                .filter((factor) => factor.category === category.id)
-                .map((factor) => (
+          {CATEGORY_META.filter((category) => factors.some((factor) => factor.category === category.id)).map((category) => {
+            const group = factors.filter((factor) => factor.category === category.id);
+            const closed = collapsed[category.id] === true;
+            return (
+            <Fragment key={category.id}>
+              <tr className="group">
+                <th colSpan={TIMEFRAMES.length + 1}>
+                  <button
+                    type="button"
+                    className="group-toggle"
+                    aria-expanded={!closed}
+                    onClick={() => setCollapsed((current) => ({ ...current, [category.id]: !current[category.id] }))}
+                  >
+                    <span aria-hidden="true">{closed ? "▸" : "▾"}</span>
+                    {category.name}
+                    <small>{group.length}</small>
+                  </button>
+                </th>
+              </tr>
+              {!closed && group.map((factor) => (
                   <tr key={factor.id}>
                     <th className="sticky-col">
                       <button type="button" className="factor-btn" onClick={() => props.onOpen(factor)}>
@@ -107,21 +125,13 @@ export function MatrixView(props: Props) {
                     })}
                   </tr>
                 ))}
-            </Group>
-          ))}
+            </Fragment>
+            );
+          })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
 
-function Group({ name, span, children }: { name: string; span: number; children: ReactNode }) {
-  return (
-    <>
-      <tr className="group">
-        <th colSpan={span}>{name}</th>
-      </tr>
-      {children}
-    </>
-  );
-}

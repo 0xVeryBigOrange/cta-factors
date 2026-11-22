@@ -38,10 +38,20 @@ export function App() {
   const [market, setMarket] = useState<"all" | Market>("all");
   const [tab, setTab] = useState<Tab>("matrix");
   const [factor, setFactor] = useState<Factor | null>(null);
+  const [sheet, setSheet] = useState(false);
 
   useEffect(() => {
     engine.setScope(watch.items, watch.active);
   }, [watch.listKey, watch.active]);
+
+  useEffect(() => {
+    if (!sheet) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [sheet]);
 
   const active = watch.active;
   const series = useMemo(() => {
@@ -120,10 +130,13 @@ export function App() {
           active={active}
           market={market}
           snapshot={snapshot}
+          sheetOpen={sheet}
+          onSheet={setSheet}
           onMarket={setMarket}
           onSelect={(item) => {
             watch.setActive(item);
             setTab("matrix");
+            setSheet(false);
           }}
           onAdd={watch.add}
           onRemove={watch.remove}
@@ -164,8 +177,32 @@ export function App() {
                     ["overview", "自选总览"],
                   ] as const
                 ).map(([id, label]) => (
-                  <button key={id} type="button" className={tab === id ? "on" : ""} onClick={() => setTab(id)}>
-                    {label}
+                  <button
+                    key={id}
+                    type="button"
+                    className={`${id === "combined" ? "tab-combined" : ""} ${tab === id ? "on" : ""}`.trim()}
+                    onClick={() => setTab(id)}
+                  >
+                    {id === "combined" && (
+                      <svg className="tab-icon" viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          d="M4.5 16.5a7.5 7.5 0 0 1 15 0"
+                        />
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          d="M12 16.5 16.4 9.4"
+                        />
+                        <circle cx="12" cy="16.5" r="1.45" fill="currentColor" />
+                      </svg>
+                    )}
+                    <span>{label}</span>
                   </button>
                 ))}
                 <span className="progress">
