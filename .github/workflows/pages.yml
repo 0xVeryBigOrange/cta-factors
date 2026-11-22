@@ -1,0 +1,64 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Refresh the Yahoo Finance equity cache. GitHub may delay scheduled runs.
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  administration: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Fetch US equity candles from Yahoo Finance
+        run: node scripts/fetch-equities.mjs
+      - run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Enable GitHub Pages from Actions
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          gh api --method POST "/repos/${{ github.repository }}/pages" \
+            -f build_type=workflow \
+            -H "Accept: application/vnd.github+json"
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            gh api --method PUT "/repos/${{ github.repository }}/pages" \
+              -f build_type=workflow \
+              -H "Accept: application/vnd.github+json"
+          fi
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
