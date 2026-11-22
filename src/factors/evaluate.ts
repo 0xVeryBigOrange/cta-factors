@@ -16,7 +16,10 @@ function stamp(candles: Candle[] | undefined, ctx: FactorContext, market: "crypt
   const derivStamp = deriv
     ? `${deriv.funding.at(-1)?.time ?? 0}:${deriv.oi.at(-1)?.time ?? 0}:${deriv.lsr.at(-1)?.ratio ?? ""}:${deriv.basis ?? ""}`
     : "none";
-  return `${market}|${ctx.timeframe}|${candles?.length ?? 0}|${last?.time ?? 0}|${last?.close ?? ""}|${last?.volume ?? ""}|${derivStamp}`;
+  const peerStamp = (ctx.peers ?? [])
+    .map((peer) => `${peer.symbol}:${peer.ret20?.toFixed(4) ?? ""}:${peer.ret60?.toFixed(4) ?? ""}`)
+    .join(",");
+  return `${market}|${ctx.symbol ?? ""}|${ctx.timeframe}|${candles?.length ?? 0}|${last?.time ?? 0}|${last?.close ?? ""}|${last?.volume ?? ""}|${derivStamp}|${peerStamp}`;
 }
 
 export function evaluate(candles: Candle[] | undefined, ctx: FactorContext, market: "crypto" | "stock"): FactorCell[] {

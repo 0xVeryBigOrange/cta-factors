@@ -5,6 +5,7 @@ import { itemKey } from "../data/engine";
 import type { EngineSnapshot } from "../data/engine";
 import { formatPercent, formatPrice, probabilityTone } from "../lib/format";
 import { evaluateAggregate } from "../factors/evaluate";
+import { buildPeers, factorContext } from "../factors/peers";
 
 type Props = {
   items: WatchItem[];
@@ -96,10 +97,12 @@ export function Sidebar(props: Props) {
             daily?.status === "ready"
               ? evaluateAggregate(
                   daily.candles,
-                  {
-                    timeframe: "1d",
-                    derivatives: deriv?.status === "ready" ? deriv : null,
-                  },
+                  factorContext(
+                    item,
+                    "1d",
+                    deriv?.status === "ready" ? deriv : null,
+                    buildPeers(props.snapshot, props.items, "1d", item.market),
+                  ),
                   item.market,
                 )
               : null;

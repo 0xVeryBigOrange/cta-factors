@@ -4,6 +4,7 @@ import {
   adxLast,
   aroonLast,
   atr,
+  barVol,
   cciLast,
   cmfLast,
   ema,
@@ -27,7 +28,8 @@ import {
   vwapLast,
   williamsRLast,
 } from "./indicators";
-import { directional, NEUTRAL, reading, squash } from "./score";
+import { capUnit, directional, NEUTRAL, reading, squash } from "./score";
+import { LITERATURE_FACTORS } from "./literature";
 
 export type { FactorCategory };
 
@@ -42,9 +44,19 @@ export type Derivatives = {
   basis: number | null;
 };
 
+export type PeerReturn = {
+  symbol: string;
+  ret20: number | null;
+  ret60: number | null;
+};
+
 export type FactorContext = {
   timeframe: Timeframe;
+  /** Symbol being scored. Cross-sectional rank uses it to find this name in `peers`. */
+  symbol?: string;
   derivatives?: Derivatives | null;
+  /** Same-market watchlist returns used by the cross-sectional rank. */
+  peers?: PeerReturn[];
 };
 
 export type Factor = {
@@ -54,6 +66,8 @@ export type Factor = {
   category: FactorCategory;
   summary: string;
   rule: string;
+  /** Paper or practitioner source. Shown in the info panel and README. */
+  citation?: string;
   minBars: number;
   needsVolume?: boolean;
   cryptoOnly?: boolean;
@@ -100,14 +114,9 @@ export const FACTORS: Factor[] = [
     category: "trend",
     minBars: 20,
     summary: "10 周期简单移动平均与 20 周期简单移动平均的相对位置。",
-    rule: "快线高于慢线为多头，反之为空头。强度为 (快-慢)/慢，经 tanh 压缩；偏离很小时记为中性。",
-    compute: (candles) => {
-      const price = closes(candles);
-      const fast = lastFinite(sma(price, 10));
-      const slow = lastFinite(sma(price, 20));
-      if (fast == null || slow == null || slow === 0) return null;
-      return reading(squash((fast - slow) / slow, 0.004));
-    },
+    rule: "快慢线百分比差距除以实现波动，再按 2 倍波动封顶。正差距为多，负差距为空。很小的差距仍保留，只是格子显示为中性。",
+    citation: "Levine and Pedersen (2016) Which Trend Is Your Friend：波动率标准化后，均线交叉与时序动量是同一类信号。",
+    compute: (candles) => maGap(candles, 10, 20),
   },
   {
     id: "sma-20-50",
@@ -116,14 +125,9 @@ export const FACTORS: Factor[] = [
     category: "trend",
     minBars: 50,
     summary: "20 周期与 50 周期简单移动平均的中期趋势交叉。",
-    rule: "快线高于慢线为多头，反之为空头。强度为 (快-慢)/慢，经 tanh 压缩；偏离很小时记为中性。",
-    compute: (candles) => {
-      const price = closes(candles);
-      const fast = lastFinite(sma(price, 20));
-      const slow = lastFinite(sma(price, 50));
-      if (fast == null || slow == null || slow === 0) return null;
-      return reading(squash((fast - slow) / slow, 0.008));
-    },
+    rule: "快慢线百分比差距除以实现波动，再按 2 倍波动封顶。正差距为多，负差距为空。很小的差距仍保留，只是格子显示为中性。",
+    citation: "Levine and Pedersen (2016) Which Trend Is Your Friend：波动率标准化后，均线交叉与时序动量是同一类信号。",
+    compute: (candles) => maGap(candles, 20, 50),
   },
   {
     id: "sma-50-200",
@@ -132,14 +136,9 @@ export const FACTORS: Factor[] = [
     category: "trend",
     minBars: 200,
     summary: "50 与 200 周期均线，对应传统金叉 / 死叉所描述的长周期趋势。",
-    rule: "50 周期均线高于 200 周期为多头，反之为空头。强度为两线相对距离，很小的距离记为中性。",
-    compute: (candles) => {
-      const price = closes(candles);
-      const fast = lastFinite(sma(price, 50));
-      const slow = lastFinite(sma(price, 200));
-      if (fast == null || slow == null || slow === 0) return null;
-      return reading(squash((fast - slow) / slow, 0.015));
-    },
+    rule: "快慢线百分比差距除以实现波动，再按 2 倍波动封顶。正差距为多，负差距为空。很小的差距仍保留，只是格子显示为中性。",
+    citation: "Levine and Pedersen (2016) Which Trend Is Your Friend：波动率标准化后，均线交叉与时序动量是同一类信号。",
+    compute: (candles) => maGap(candles, 50, 200),
   },
   {
     id: "ema-slope-20",
@@ -148,13 +147,14 @@ export const FACTORS: Factor[] = [
     category: "trend",
     minBars: 24,
     summary: "20 周期指数移动平均在最近 3 根 K 线上的斜率。",
-    rule: "斜率为正做多，为负做空。强度是这 3 根上的变化率，接近 0 为中性。",
+    rule: "斜率除以实现波动后封顶。斜率为正做多，为负做空。接近 0 的强度在格子上显示为中性，数值仍保留。",
+    citation: "Baltas and Kosowski 的趋势信号与 Carver 的波动率标准化一致：斜率先除以波动，再封顶。",
     compute: (candles) => {
       const series = ema(closes(candles), 20);
       const now = lastFinite(series);
       const prev = lastFinite(series, 3);
       if (now == null || prev == null || prev === 0) return null;
-      return reading(squash((now - prev) / prev, 0.006));
+      return reading(capUnit((now - prev) / prev, barVol(candles)));
     },
   },
   {
@@ -164,16 +164,18 @@ export const FACTORS: Factor[] = [
     category: "trend",
     minBars: 40,
     summary: "MACD(12,26,9)。用快慢指数均线的差描述趋势，柱状图描述该趋势是否在加速。",
-    rule: "MACD 线相对零轴决定主要方向，柱状图（MACD 减信号线）调整强度。二者方向冲突时强度减半。稳态趋势里柱状图会靠近 0，仍保留零轴方向。",
+    rule: "MACD 线与柱状图都先除以价格和实现波动，再封顶。线的方向为主，柱状图占三成。二者方向冲突时强度减半。",
+    citation: "Appel 的 MACD。缩放方式对齐 Carver：先做波动率标准化，再用上限代替硬阈值。",
     compute: (candles) => {
       const price = closes(candles);
       const { line, hist } = macd(price);
       const lineNow = lastFinite(line);
       const histNow = lastFinite(hist);
       const close = price[price.length - 1];
-      if (lineNow == null || histNow == null || close === 0) return null;
-      const lineScore = squash(lineNow / close, 0.004);
-      const histScore = squash(histNow / close, 0.002);
+      const vol = barVol(candles);
+      if (lineNow == null || histNow == null || close === 0 || vol === 0) return null;
+      const lineScore = capUnit(lineNow / close, vol);
+      const histScore = capUnit(histNow / close, vol * 0.5);
       let score = 0.7 * lineScore + 0.3 * histScore;
       if (Math.sign(lineNow) !== 0 && Math.sign(histNow) !== 0 && Math.sign(lineNow) !== Math.sign(histNow)) {
         score *= 0.5;
@@ -300,13 +302,15 @@ export const FACTORS: Factor[] = [
     category: "trend",
     minBars: 20,
     summary: "最近 20 根收盘价的普通最小二乘斜率。",
-    rule: "把斜率换算成这 20 根 K 线的涨跌幅。上涨做多，下跌做空，斜率接近 0 为中性。",
+    rule: "把斜率换成这 20 根的涨跌幅，再除以实现波动的平方根时间。上涨做多，下跌做空，约 2 倍波动后封顶。",
+    citation: "Moskowitz, Ooi, Pedersen (2012) 用波动率标准化收益描述趋势强度，这里用回归斜率代替简单收益。",
     compute: (candles) => {
       const price = closes(candles);
       const slope = linregSlope(price, price.length - 1, 20);
       const close = price[price.length - 1];
+      const vol = barVol(candles);
       if (slope == null || close === 0) return null;
-      return reading(squash((slope * 20) / close, 0.02));
+      return reading(capUnit((slope * 20) / close, vol * Math.sqrt(20)));
     },
   },
   {
@@ -356,8 +360,9 @@ export const FACTORS: Factor[] = [
     category: "momentum",
     minBars: 11,
     summary: "10 根 K 线的价格变化率，短周期时间序列动量。",
-    rule: "涨做多，跌做空。约 2% 的变化视为较强信号，非常小的变化记为中性。",
-    compute: (candles) => rocSignal(candles, 10, 0.02),
+    rule: "收益除以实现波动再乘以根号回看长度。约为 2 倍波动时封顶。涨做多，跌做空。很小的强度显示为中性，但不再被抹成 0。",
+    citation: "Moskowitz, Ooi, Pedersen (2012) Time Series Momentum：方向看过去收益的符号，幅度用实现波动标准化。",
+    compute: (candles) => rocSignal(candles, 10),
   },
   {
     id: "roc-20",
@@ -366,8 +371,9 @@ export const FACTORS: Factor[] = [
     category: "momentum",
     minBars: 21,
     summary: "20 根 K 线的价格变化率，中周期时间序列动量。",
-    rule: "涨做多，跌做空。约 4% 的变化视为较强信号，非常小的变化记为中性。",
-    compute: (candles) => rocSignal(candles, 20, 0.04),
+    rule: "收益除以实现波动再乘以根号回看长度。约为 2 倍波动时封顶。涨做多，跌做空。很小的强度显示为中性，但不再被抹成 0。",
+    citation: "Moskowitz, Ooi, Pedersen (2012) Time Series Momentum：方向看过去收益的符号，幅度用实现波动标准化。",
+    compute: (candles) => rocSignal(candles, 20),
   },
   {
     id: "roc-60",
@@ -376,8 +382,9 @@ export const FACTORS: Factor[] = [
     category: "momentum",
     minBars: 61,
     summary: "60 根 K 线的价格变化率，CTA 里常用的长回看时间序列动量。",
-    rule: "涨做多，跌做空。约 8% 的变化视为较强信号，非常小的变化记为中性。",
-    compute: (candles) => rocSignal(candles, 60, 0.08),
+    rule: "收益除以实现波动再乘以根号回看长度。约为 2 倍波动时封顶。涨做多，跌做空。很小的强度显示为中性，但不再被抹成 0。",
+    citation: "Hurst, Ooi, Pedersen (2017) A Century of Evidence on Trend-Following Investing：多个回看速度一起用。",
+    compute: (candles) => rocSignal(candles, 60),
   },
   {
     id: "rsi-14",
@@ -420,11 +427,10 @@ export const FACTORS: Factor[] = [
     category: "momentum",
     minBars: 20,
     summary: "商品通道指标 CCI(20)，典型价相对其均值的偏离。",
-    rule: "绝对值小于 50 为中性。CCI 为正做多，为负做空，±100 附近视为较强动量。",
+    rule: "CCI 为正做多，为负做空。约 ±100 映射到较强强度，更大的值封顶，不再把 ±50 以内直接清零。",
     compute: (candles) => {
       const value = cciLast(candles, 20);
       if (value == null) return null;
-      if (Math.abs(value) < 50) return NEUTRAL;
       return reading(squash(value / 100, 1));
     },
   },
@@ -481,7 +487,7 @@ export const FACTORS: Factor[] = [
     category: "meanReversion",
     minBars: 20,
     summary: "布林带(20, 2) 的 %B，描述收盘在上下轨之间的位置。",
-    rule: "%B ≥ 0.85 视为向上伸展过度，反向做空；%B ≤ 0.15 反向做多；中间区域为中性。",
+    rule: "位置高于中线反向做空，低于中线反向做多。越靠近带外强度越高，到带外后封顶。中间很小的偏离显示为中性。",
     compute: (candles) => {
       const price = closes(candles);
       const end = price.length - 1;
@@ -501,7 +507,7 @@ export const FACTORS: Factor[] = [
     category: "meanReversion",
     minBars: 20,
     summary: "收盘价相对 SMA(20) 的 Z 分数，标准差使用总体标准差（除以 N）。",
-    rule: "|Z| < 1 为中性。Z > 1 反向做空，Z < -1 反向做多。|Z| 约 2.5 视为极端。",
+    rule: "Z 为正反向做空，Z 为负反向做多。|Z| 约 2.5 封顶。靠近 0 的强度保留，格子上显示为中性。",
     compute: (candles) => {
       const price = closes(candles);
       const end = price.length - 1;
@@ -509,8 +515,7 @@ export const FACTORS: Factor[] = [
       const deviation = stdev(price, end, 20);
       if (mid == null || deviation == null || deviation === 0) return NEUTRAL;
       const z = (price[end] - mid) / deviation;
-      if (Math.abs(z) < 1) return NEUTRAL;
-      return reading(squash(-z / 2, 1));
+      return reading(capUnit(-z, 1.25));
     },
   },
   {
@@ -520,7 +525,7 @@ export const FACTORS: Factor[] = [
     category: "meanReversion",
     minBars: 30,
     summary: "肯特纳通道 EMA(20) ± 2×ATR(20) 上的价格位置，按均值回归解释。",
-    rule: "位置 ≥ 0.85 反向做空，≤ 0.15 反向做多，通道中部为中性。",
+    rule: "位置高于中线反向做空，低于中线反向做多。越靠近通道外强度越高，到通道外后封顶。",
     compute: (candles) => {
       const price = closes(candles);
       const mid = lastFinite(ema(price, 20));
@@ -539,13 +544,12 @@ export const FACTORS: Factor[] = [
     category: "meanReversion",
     minBars: 10,
     summary: "Connors 短周期 RSI(2)，专门捕捉极端偏离后的回归。",
-    rule: "RSI(2) ≥ 90 反向做空，≤ 10 反向做多，否则中性。越靠近 0 或 100，强度越高。",
+    rule: "按均值回归连续打分：50 对应 0，靠近 0 封顶做多，靠近 100 封顶做空。不再用 10/90 的硬开关。",
+    citation: "Larry Connors 的 RSI(2)。这里把极端阈值改成封顶，避免只在极少样本上突然翻转。",
     compute: (candles) => {
       const value = lastFinite(rsi(closes(candles), 2));
       if (value == null) return null;
-      if (value >= 90) return directional(false, Math.min(1, (value - 85) / 15), 0.4);
-      if (value <= 10) return directional(true, Math.min(1, (15 - value) / 15), 0.4);
-      return NEUTRAL;
+      return reading((50 - value) / 50);
     },
   },
   {
@@ -806,11 +810,20 @@ export const FACTORS: Factor[] = [
   },
 ];
 
-function rocSignal(candles: Candle[], period: number, scale: number): Reading | null {
+function rocSignal(candles: Candle[], period: number): Reading | null {
   const price = closes(candles);
   const change = pctChange(price[price.length - 1], price[price.length - 1 - period]);
   if (change == null) return null;
-  return reading(squash(change, scale));
+  const vol = barVol(candles);
+  return reading(capUnit(change, vol * Math.sqrt(period)));
+}
+
+function maGap(candles: Candle[], fastPeriod: number, slowPeriod: number): Reading | null {
+  const price = closes(candles);
+  const fast = lastFinite(sma(price, fastPeriod));
+  const slow = lastFinite(sma(price, slowPeriod));
+  if (fast == null || slow == null || slow === 0) return null;
+  return reading(capUnit((fast - slow) / slow, barVol(candles)));
 }
 
 function donchian(candles: Candle[], period: number): Reading | null {
@@ -825,9 +838,7 @@ function donchian(candles: Candle[], period: number): Reading | null {
 
 function bandReversion(position: number): Reading | null {
   if (!Number.isFinite(position)) return null;
-  if (position >= 0.85) return directional(false, Math.min(1, (position - 0.7) / 0.5), 0.35);
-  if (position <= 0.15) return directional(true, Math.min(1, (0.3 - position) / 0.5), 0.35);
-  return NEUTRAL;
+  return reading(capUnit(0.5 - position, 0.25));
 }
 
 function changeOver(points: DerivPoint[], lookbackMs: number): { change: number } | null {
@@ -846,6 +857,8 @@ function changeOver(points: DerivPoint[], lookbackMs: number): { change: number 
   if (previous.value === 0 || previous.time === end.time) return null;
   return { change: end.value / previous.value - 1 };
 }
+
+FACTORS.push(...LITERATURE_FACTORS);
 
 export function factorsFor(market: "crypto" | "stock"): Factor[] {
   return market === "crypto" ? FACTORS : FACTORS.filter((factor) => !factor.cryptoOnly);

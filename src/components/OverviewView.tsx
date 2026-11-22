@@ -5,6 +5,7 @@ import type { EngineSnapshot } from "../data/engine";
 import { itemKey } from "../data/engine";
 import { displayName } from "../data/symbols";
 import { evaluateAggregate } from "../factors/evaluate";
+import { buildPeers, factorContext } from "../factors/peers";
 import { formatProbability, probabilityTone } from "../lib/format";
 
 type Props = {
@@ -32,7 +33,11 @@ export function OverviewView(props: Props) {
           TIMEFRAMES.map((tf) => {
             const snap = props.snapshot.series[`${item.market}:${item.symbol}:${tf.id}`];
             if (snap?.status !== "ready") return [tf.id, null];
-            const aggregate = evaluateAggregate(snap.candles, { timeframe: tf.id, derivatives }, item.market);
+            const aggregate = evaluateAggregate(
+              snap.candles,
+              factorContext(item, tf.id, derivatives, buildPeers(props.snapshot, props.items, tf.id, item.market)),
+              item.market,
+            );
             return [tf.id, aggregate.insufficient ? null : aggregate.probability];
           }),
         ) as Record<Timeframe, number | null>;
