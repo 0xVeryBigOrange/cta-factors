@@ -245,6 +245,7 @@ class Engine {
       this.commit();
     } catch (error) {
       if (isAbort(error) || !this.hasItem(item)) return;
+      if (current?.status === "ready" && current.candles.length > 0) return;
       this.series = {
         ...this.series,
         [key]: {
@@ -263,8 +264,10 @@ class Engine {
     const signal = this.signalFor(key);
     const current = this.deriv[key];
     if (current?.status === "ready" && Date.now() - (current.updatedAt ?? 0) < 60_000) return;
-    this.deriv = { ...this.deriv, [key]: { ...(current ?? emptyDeriv()), status: "loading" } };
-    this.commit();
+    if (current?.status !== "ready") {
+      this.deriv = { ...this.deriv, [key]: { ...(current ?? emptyDeriv()), status: "loading" } };
+      this.commit();
+    }
     try {
       const [result, quote] = await Promise.all([fetchDerivatives(symbol, signal), fetchCryptoQuote(symbol, signal)]);
       if (signal.aborted) return;
@@ -287,6 +290,7 @@ class Engine {
       this.commit();
     } catch (error) {
       if (isAbort(error)) return;
+      if (current?.status === "ready") return;
       this.deriv = {
         ...this.deriv,
         [key]: { ...emptyDeriv("error"), error: "衍生品数据不可用（资金费率、持仓量等）", updatedAt: Date.now() },
@@ -316,7 +320,13 @@ class Engine {
       if (file && hasBars(file)) {
         this.applyFile(item, file);
       } else if (import.meta.env.DEV) {
-        const yahoo = await this.loadDevYahoo(item, signal);
+        let yahoo = false;
+        try {
+          yahoo = await this.loadDevYahoo(item, signal);
+        } catch (error) {
+          if (isAbort(error) || !this.hasItem(item)) return;
+        }
+        if (signal.aborted || !this.hasItem(item)) return;
         if (!yahoo) await this.applyTencent(item, signal);
       } else {
         await this.applyTencent(item, signal);
