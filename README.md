@@ -47,16 +47,16 @@ K 线按下面的顺序尝试，谁先返回足够长度且间隔正确的数据
 
 Yahoo Finance 图表接口 `query1.finance.yahoo.com/v8/finance/chart` **没有浏览器 CORS**，页面不能直接请求。本仓库用两种互补方式：
 
-1. **GitHub Actions 预取（主路径）**。`Deploy GitHub Pages` 在推送到 `main`、手动触发，以及每 2 小时的定时任务里，用 Yahoo 拉 `src/data/universe.json` 里的美股，写成 `public/data/equities/<SYMBOL>.json`，再和静态站一起发布。4 小时没有原生周期，由 1 小时 K 线按 UTC 时间桶聚合。价格是图表接口的前复权（拆分已调整）OHLC，没有再做股息调整。
+1. **GitHub Actions 预取（主路径）**。`Deploy GitHub Pages` 在推送到 `main`、手动触发，以及每 2 小时的定时任务里，用 Yahoo 拉 `src/data/universe.json` 里的美股，写成 `public/data/equities/<SYMBOL>.json`，再和静态站一起发布。4 小时没有原生周期，由 1 小时 K 线按 UTC 时间桶聚合。价格是图表接口的前复权（拆分已调整）OHLC，没有再做股息调整。每次 Yahoo 请求最多等 20 秒，遇到 429 或 503 会短暂重试。某个周期没拉到时，用站点上一次发布的 JSON 把缺的周期补上，避免一次失败就把这个代码从页面上拿掉。
 2. **腾讯行情（浏览器补齐）**。`web.ifzq.gtimg.cn` 和 `qt.gtimg.cn` 允许跨域。已缓存的代码用它刷新报价；还没被 Actions 收录的代码，用它提供日线和周线。腾讯这条线目前拿不到可用的美股分钟 K，所以自定义代码的 5 分到 4 小时会标成不可用。行情可能延迟，休市时显示最近收盘。
 
 定时任务由 GitHub 调度，实际运行时间可能晚于 cron。两次发布之间，因子用的是上一次缓存，报价可以比 K 线更新。
 
-本地开发时，如果还没有 JSON 缓存，Vite 会把 `/yahoo` 代理到 Yahoo，这样任意代码也能算出全部周期。`npm run fetch-equities` 可以预先生成缓存。只拉一部分代码：`ONLY=AAPL,SPY npm run fetch-equities`。
+本地开发时，如果还没有 JSON 缓存，Vite 会把 `/yahoo` 代理到 Yahoo，这样任意代码也能算出全部周期。Yahoo 失败时改用腾讯的日线和周线，5 分到 4 小时标成不可用。`npm run fetch-equities` 可以预先生成缓存。只拉一部分代码：`ONLY=AAPL,SPY npm run fetch-equities`。
 
 ### 频率限制
 
-每个数据源有自己的请求间隔。K 线按周期缓存（5 分约 20 秒，日线约 5 分钟），自选里当前代码优先加载，其余代码先加载日线和 1 小时。请求失败或 429 会退避，短时间不再打已经不可用的源。
+每个数据源有自己的请求间隔。单次请求超过 12 秒记为超时，立刻换下一个源，不再一直等。K 线按周期缓存（5 分约 20 秒，日线约 5 分钟），自选里当前代码优先加载，其余代码先加载日线和 1 小时。超时、断网、403、429、451 或 5xx 会把该源冷却约 3 分钟。刷新失败时，已经显示出来的 K 线和衍生品留在页面上，刷新时间停在上一次成功。
 
 ## 综合概率
 

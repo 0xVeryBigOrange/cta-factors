@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { acceptPublishedEquity, mergeEquityFile, publishedEquityUrl, usableSeries } from "./equity-cache.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "public", "data", "equities");
@@ -26,29 +27,59 @@ function round(value) {
   return Math.round(value * 1e6) / 1e6;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function yahoo(symbol, interval, range) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=false&events=div%7Csplits`;
-  const response = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
-  if (!response.ok) throw new Error(`${response.status} ${interval} ${range}`);
-  const payload = await response.json();
-  const result = payload.chart?.result?.[0];
-  if (!result?.timestamp) throw new Error(payload.chart?.error?.description || `empty ${interval}`);
-  const quote = result.indicators.quote[0];
-  const rows = [];
-  for (let i = 0; i < result.timestamp.length; i++) {
-    const open = quote.open?.[i];
-    const high = quote.high?.[i];
-    const low = quote.low?.[i];
-    const close = quote.close?.[i];
-    if (open == null || high == null || low == null || close == null) continue;
-    rows.push([result.timestamp[i] * 1000, round(open), round(high), round(low), round(close), quote.volume?.[i] ?? 0]);
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": UA, Accept: "application/json" },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (response.status === 429 || response.status === 503) {
+        lastError = new Error(`${response.status} ${interval} ${range}`);
+        await delay(700 * (attempt + 1));
+        continue;
+      }
+      if (!response.ok) throw new Error(`${response.status} ${interval} ${range}`);
+      const payload = await response.json();
+      const result = payload.chart?.result?.[0];
+      if (!result?.timestamp) throw new Error(payload.chart?.error?.description || `empty ${interval}`);
+      const quote = result.indicators.quote[0];
+      const rows = [];
+      for (let i = 0; i < result.timestamp.length; i++) {
+        const open = quote.open?.[i];
+        const high = quote.high?.[i];
+        const low = quote.low?.[i];
+        const close = quote.close?.[i];
+        if (open == null || high == null || low == null || close == null) continue;
+        rows.push([result.timestamp[i] * 1000, round(open), round(high), round(low), round(close), quote.volume?.[i] ?? 0]);
+      }
+      return {
+        rows,
+        name: result.meta?.longName || result.meta?.shortName,
+        price: result.meta?.regularMarketPrice,
+        changePercent: result.meta?.regularMarketChangePercent,
+      };
+    } catch (error) {
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") throw new Error(`timeout ${interval} ${range}`);
+      throw error;
+    }
   }
-  return {
-    rows,
-    name: result.meta?.longName || result.meta?.shortName,
-    price: result.meta?.regularMarketPrice,
-    changePercent: result.meta?.regularMarketChangePercent,
-  };
+  throw lastError ?? new Error(`no ${interval}`);
+}
+
+async function publishedEquity(symbol) {
+  const response = await fetch(publishedEquityUrl(symbol), {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) return null;
+  return acceptPublishedEquity(await response.json(), symbol);
 }
 
 async function series(symbol, interval, ranges, keep) {
@@ -95,16 +126,29 @@ await pool(symbols, 3, async (symbol) => {
     }
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
-  if (!Object.values(file.series).some((rows) => rows?.length)) {
-    process.stderr.write(`${symbol} skipped, no bars\n`);
-    return;
-  }
   if (meta) {
     file.name = meta.name;
     file.price = meta.price;
     file.changePercent = meta.changePercent;
   }
-  await writeFile(join(outDir, `${symbol}.json`), JSON.stringify(file));
+  let published = file;
+  if (PLANS.some(([key]) => !file.series[key]?.length)) {
+    try {
+      const previous = await publishedEquity(symbol);
+      if (previous) {
+        const merged = mergeEquityFile(file, previous);
+        published = merged.file;
+        if (merged.filled.length) process.stderr.write(`${symbol} filled ${merged.filled.join(",")} from previous publish\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`${symbol} previous cache unavailable: ${error?.message || error}\n`);
+    }
+  }
+  if (!usableSeries(published.series)) {
+    process.stderr.write(`${symbol} skipped, no bars\n`);
+    return;
+  }
+  await writeFile(join(outDir, `${symbol}.json`), JSON.stringify(published));
   ok += 1;
 });
 

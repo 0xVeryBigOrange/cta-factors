@@ -43,6 +43,50 @@ export const gates = {
   tencent: new RequestGate(180),
 };
 
+/** Browser calls give up and try the next source after this long. */
+export const REQUEST_TIMEOUT_MS = 12_000;
+
+type FetchOptions = {
+  source: string;
+  gate: RequestGate;
+  signal?: AbortSignal;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+};
+
+type Deadline = {
+  signal: AbortSignal;
+  dispose: () => void;
+  timedOut: () => boolean;
+};
+
+function requestDeadline(parent: AbortSignal | undefined, timeoutMs: number): Deadline {
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, timeoutMs);
+  const onParentAbort = () => controller.abort();
+  if (parent) {
+    if (parent.aborted) controller.abort();
+    else parent.addEventListener("abort", onParentAbort);
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+    },
+    timedOut: () => didTimeout && !parent?.aborted,
+  };
+}
+
+function asAbort(error: unknown): DOMException {
+  if (error instanceof DOMException && error.name === "AbortError") return error;
+  return new DOMException("Aborted", "AbortError");
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -60,17 +104,15 @@ export function sourceIsDown(error: unknown): boolean {
   return !isAbort(error);
 }
 
-export async function fetchJson(
-  url: string,
-  options: { source: string; gate: RequestGate; signal?: AbortSignal; headers?: Record<string, string> },
-): Promise<unknown> {
+export async function fetchJson(url: string, options: FetchOptions): Promise<unknown> {
   return options.gate.run(async () => {
     let last: Error | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const deadline = requestDeadline(options.signal, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
       try {
         const response = await fetch(url, {
-          signal: options.signal,
+          signal: deadline.signal,
           headers: { Accept: "application/json", ...options.headers },
         });
         if (response.status === 429 || response.status === 418) {
@@ -81,30 +123,44 @@ export async function fetchJson(
         if (!response.ok) throw new HttpError(`${options.source} ${response.status}`, response.status, options.source);
         return await response.json();
       } catch (error) {
+        if (options.signal?.aborted) throw asAbort(error);
+        if (deadline.timedOut()) {
+          last = new HttpError(`${options.source} 超时`, 0, options.source);
+          break;
+        }
         if (error instanceof HttpError && error.status !== 429 && error.status !== 418) throw error;
         if (isAbort(error)) throw error;
         last = error instanceof Error ? error : new Error(String(error));
         await sleep(250);
+      } finally {
+        deadline.dispose();
       }
     }
     throw last ?? new HttpError(`${options.source} 请求失败`, 0, options.source);
   });
 }
 
-export async function fetchText(
-  url: string,
-  options: { source: string; gate: RequestGate; signal?: AbortSignal },
-): Promise<string> {
+export async function fetchText(url: string, options: FetchOptions): Promise<string> {
   return options.gate.run(async () => {
-    const response = await fetch(url, { signal: options.signal });
-    if (!response.ok) throw new HttpError(`${options.source} ${response.status}`, response.status, options.source);
-    const buffer = await response.arrayBuffer();
-    const type = response.headers.get("content-type") ?? "";
-    const encoding = /gbk|gb2312/i.test(type) ? "gbk" : "utf-8";
+    if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const deadline = requestDeadline(options.signal, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
     try {
-      return new TextDecoder(encoding).decode(buffer);
-    } catch {
-      return new TextDecoder().decode(buffer);
+      const response = await fetch(url, { signal: deadline.signal, headers: options.headers });
+      if (!response.ok) throw new HttpError(`${options.source} ${response.status}`, response.status, options.source);
+      const buffer = await response.arrayBuffer();
+      const type = response.headers.get("content-type") ?? "";
+      const encoding = /gbk|gb2312/i.test(type) ? "gbk" : "utf-8";
+      try {
+        return new TextDecoder(encoding).decode(buffer);
+      } catch {
+        return new TextDecoder().decode(buffer);
+      }
+    } catch (error) {
+      if (options.signal?.aborted) throw asAbort(error);
+      if (deadline.timedOut()) throw new HttpError(`${options.source} 超时`, 0, options.source);
+      throw error;
+    } finally {
+      deadline.dispose();
     }
   });
 }

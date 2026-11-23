@@ -1,6 +1,6 @@
 import type { Candle, Timeframe } from "../types";
 import { timeframeMs } from "../types";
-import { fetchJson, gates, HttpError, sourceIsDown } from "./http";
+import { fetchJson, gates, HttpError, isAbort, sourceIsDown } from "./http";
 import { resample, sortCandles } from "./resample";
 
 const BINANCE_INTERVAL: Record<Timeframe, string> = {
@@ -101,6 +101,10 @@ function cooled(id: string): boolean {
 
 function penalize(id: string): void {
   cooldown.set(id, Date.now() + 3 * 60_000);
+}
+
+export function clearCryptoCooldown(): void {
+  cooldown.clear();
 }
 
 function makeCandle(time: number, open: unknown, high: unknown, low: unknown, close: unknown, volume: unknown): Candle | null {
@@ -253,6 +257,7 @@ export async function fetchCryptoCandles(base: string, tf: Timeframe, signal?: A
       if (!best || candles.length > best.candles.length) best = { candles, source: provider.label };
       if (candles.length >= 240) return best;
     } catch (error) {
+      if (isAbort(error)) throw error;
       lastError = error;
       if (sourceIsDown(error)) penalize(provider.id);
     }
