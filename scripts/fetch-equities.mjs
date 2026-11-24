@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptPublishedEquity, mergeEquityFile, publishedEquityUrl, usableSeries } from "./equity-cache.mjs";
+import { acceptPublishedEquity, mergeEquityFile, publishedEquityUrl, usableSeries, yahooShouldRetry } from "./equity-cache.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "public", "data", "equities");
@@ -40,12 +40,14 @@ async function yahoo(symbol, interval, range) {
         headers: { "User-Agent": UA, Accept: "application/json" },
         signal: AbortSignal.timeout(20_000),
       });
-      if (response.status === 429 || response.status === 503) {
-        lastError = new Error(`${response.status} ${interval} ${range}`);
-        await delay(700 * (attempt + 1));
-        continue;
+      if (!response.ok) {
+        if (yahooShouldRetry(response.status, "", attempt)) {
+          lastError = new Error(`${response.status} ${interval} ${range}`);
+          await delay(700 * (attempt + 1));
+          continue;
+        }
+        throw new Error(`${response.status} ${interval} ${range}`);
       }
-      if (!response.ok) throw new Error(`${response.status} ${interval} ${range}`);
       const payload = await response.json();
       const result = payload.chart?.result?.[0];
       if (!result?.timestamp) throw new Error(payload.chart?.error?.description || `empty ${interval}`);
@@ -66,7 +68,13 @@ async function yahoo(symbol, interval, range) {
         changePercent: result.meta?.regularMarketChangePercent,
       };
     } catch (error) {
-      if (error?.name === "TimeoutError" || error?.name === "AbortError") throw new Error(`timeout ${interval} ${range}`);
+      const name = error?.name || "";
+      if (yahooShouldRetry(undefined, name, attempt)) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        await delay(700 * (attempt + 1));
+        continue;
+      }
+      if (name === "TimeoutError" || name === "AbortError") throw new Error(`timeout ${interval} ${range}`);
       throw error;
     }
   }
@@ -112,13 +120,16 @@ async function pool(items, limit, task) {
 
 await mkdir(outDir, { recursive: true });
 let ok = 0;
+const writtenSymbols = [];
 await pool(symbols, 3, async (symbol) => {
-  const file = { symbol, source: "yahoo", fetchedAt: Date.now(), series: {} };
+  const fetchedAt = Date.now();
+  const file = { symbol, source: "yahoo", fetchedAt, series: {}, seriesFetchedAt: {} };
   let meta = null;
   for (const [key, interval, ranges, keep] of PLANS) {
     try {
       const chart = await series(symbol, interval, ranges, keep);
       file.series[key] = chart.rows;
+      file.seriesFetchedAt[key] = fetchedAt;
       meta = chart;
       process.stdout.write(`${symbol} ${key} ${chart.rows.length}\n`);
     } catch (error) {
@@ -149,11 +160,21 @@ await pool(symbols, 3, async (symbol) => {
     return;
   }
   await writeFile(join(outDir, `${symbol}.json`), JSON.stringify(published));
+  writtenSymbols.push(symbol);
   ok += 1;
 });
 
 await writeFile(
   join(outDir, "index.json"),
-  JSON.stringify({ generatedAt: new Date().toISOString(), symbols: symbols.filter(() => true), written: ok }, null, 2),
+  JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      symbols: writtenSymbols.slice().sort(),
+      requested: symbols.length,
+      written: ok,
+    },
+    null,
+    2,
+  ),
 );
 console.log(`wrote ${ok}/${symbols.length} equity files`);

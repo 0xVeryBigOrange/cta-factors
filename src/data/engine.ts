@@ -3,7 +3,7 @@ import type { Candle, Timeframe, WatchItem } from "../types";
 import { TIMEFRAMES, timeframeMs } from "../types";
 import { BINANCE_INTERVAL, fetchCryptoCandles, fetchCryptoQuote } from "./crypto";
 import { fetchDerivatives } from "./derivatives";
-import { fetchYahooCandles, loadEquityFile, rowsToCandles, clearEquityFileCache, type EquityFile } from "./equities";
+import { fetchYahooCandles, loadEquityFile, rowsToCandles, clearEquityFileCache, type EquityFile, type EquitySeriesKey } from "./equities";
 import { isAbort } from "./http";
 import { resample } from "./resample";
 import { displayName, tencentPreset } from "./symbols";
@@ -25,6 +25,8 @@ export type SeriesSnap = {
   source?: string;
   updatedAt?: number;
   asOf?: number;
+  /** When the upstream candle cache was fetched. Independent of updatedAt, which is the last local apply. */
+  cacheFetchedAt?: number;
   error?: string;
   final?: boolean;
 };
@@ -352,13 +354,20 @@ class Engine {
     for (const tf of ["5m", "15m", "30m", "1h", "1d", "1w"] as const) {
       const candles = rowsToCandles(file.series[tf]);
       next[seriesKey(item, tf)] = candles.length
-        ? { status: "ready", candles, source: "Yahoo Finance", updatedAt, asOf: file.fetchedAt }
+        ? { status: "ready", candles, source: "Yahoo Finance", updatedAt, asOf: candles.at(-1)?.time, cacheFetchedAt: cacheStamp(file, tf) }
         : { status: "empty", candles: [], source: "Yahoo Finance", updatedAt, final: true, error: "该周期没有数据" };
     }
     const hourly = rowsToCandles(file.series["1h"]);
     const fourHour = hourly.length ? resample(hourly, timeframeMs("4h")) : [];
     next[seriesKey(item, "4h")] = fourHour.length
-      ? { status: "ready", candles: fourHour, source: "Yahoo Finance · 1小时聚合", updatedAt, asOf: file.fetchedAt }
+      ? {
+          status: "ready",
+          candles: fourHour,
+          source: "Yahoo Finance · 1小时聚合",
+          updatedAt,
+          asOf: fourHour.at(-1)?.time,
+          cacheFetchedAt: cacheStamp(file, "1h"),
+        }
       : { status: "empty", candles: [], final: true, error: "缺少 1 小时 K 线，无法聚合 4 小时", updatedAt };
     this.series = next;
     if (file.price) {
@@ -385,13 +394,20 @@ class Engine {
     const next = { ...this.series };
     for (const bundle of bundles) {
       next[seriesKey(item, bundle.tf)] = bundle.candles.length
-        ? { status: "ready", candles: bundle.candles, source: "Yahoo Finance", updatedAt, asOf: bundle.candles.at(-1)?.time }
+        ? {
+            status: "ready",
+            candles: bundle.candles,
+            source: "Yahoo Finance",
+            updatedAt,
+            asOf: bundle.candles.at(-1)?.time,
+            cacheFetchedAt: updatedAt,
+          }
         : { status: "empty", candles: [], final: true, error: "该周期没有数据", updatedAt };
     }
     const hourly = bundles.find((bundle) => bundle.tf === "1h")?.candles ?? [];
     const fourHour = hourly.length ? resample(hourly, timeframeMs("4h")) : [];
     next[seriesKey(item, "4h")] = fourHour.length
-      ? { status: "ready", candles: fourHour, source: "Yahoo Finance · 1小时聚合", updatedAt }
+      ? { status: "ready", candles: fourHour, source: "Yahoo Finance · 1小时聚合", updatedAt, asOf: fourHour.at(-1)?.time, cacheFetchedAt: updatedAt }
       : { status: "empty", candles: [], final: true, error: "缺少 1 小时 K 线", updatedAt };
     this.series = next;
     const daily = bundles.find((bundle) => bundle.tf === "1d")?.candles;
@@ -627,6 +643,12 @@ class Engine {
 
 function hasBars(file: EquityFile): boolean {
   return Object.values(file.series).some((rows) => Array.isArray(rows) && rows.length > 0);
+}
+
+function cacheStamp(file: EquityFile, key: EquitySeriesKey): number {
+  const specific = file.seriesFetchedAt?.[key];
+  if (typeof specific === "number" && Number.isFinite(specific) && specific > 0) return specific;
+  return file.fetchedAt;
 }
 
 export const engine = new Engine();

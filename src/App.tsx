@@ -14,6 +14,7 @@ import { factorHistory } from "./factors/history";
 import { buildPeers, factorContext } from "./factors/peers";
 import type { Market, Timeframe } from "./types";
 import { TIMEFRAMES } from "./types";
+import { yahooCacheStatus } from "./data/freshness";
 import { formatPercent, formatPrice, formatTime } from "./lib/format";
 
 type Tab = "matrix" | "combined" | "overview";
@@ -70,6 +71,20 @@ export function App() {
   const sources = describeSources(TIMEFRAMES.map((tf) => series[tf.id]?.source).filter((source): source is string => !!source));
   const updated = Math.max(0, ...TIMEFRAMES.map((tf) => series[tf.id]?.updatedAt ?? 0), quote?.updatedAt ?? 0);
   const asOf = Math.max(0, ...TIMEFRAMES.map((tf) => series[tf.id]?.candles.at(-1)?.time ?? 0));
+  const cache =
+    active?.market === "stock"
+      ? yahooCacheStatus(
+          TIMEFRAMES.map((tf) => {
+            const snap = series[tf.id];
+            return {
+              timeframe: tf.id,
+              source: snap?.source,
+              cacheFetchedAt: snap?.cacheFetchedAt,
+              latestBar: snap?.candles.at(-1)?.time,
+            };
+          }),
+        )
+      : null;
 
   const peers = useMemo(() => {
     const map = {} as Partial<Record<Timeframe, ReturnType<typeof buildPeers>>>;
@@ -161,6 +176,16 @@ export function App() {
                   <span className={snapshot.live === "ws" ? "pill live" : "pill"}>{liveLabel}</span>
                   <span>刷新于 {formatTime(updated || undefined)}</span>
                   <span>最新 K 线 {formatTime(asOf || undefined)}</span>
+                  {cache && (
+                    <span className={cache.stale ? "pill warn" : undefined} title={new Date(cache.fetchedAt).toISOString()}>
+                      {cache.mixed ? "最早的 K 线缓存于" : "K 线缓存于"} {formatTime(cache.fetchedAt)}
+                    </span>
+                  )}
+                  {cache?.message && (
+                    <span className="cache-note" role="status">
+                      {cache.message}
+                    </span>
+                  )}
                   <span>{sources || "正在连接数据源"}</span>
                   {derivSnap?.source && active.market === "crypto" && <span>衍生品 {derivSnap.source}</span>}
                   {derivSnap?.status === "error" && <span>衍生品暂不可用</span>}
