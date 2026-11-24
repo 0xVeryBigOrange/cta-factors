@@ -8,6 +8,8 @@ export type EquityFile = {
   symbol: string;
   source: "yahoo";
   fetchedAt: number;
+  /** Per-timeframe fetch time. Backfilled series keep the earlier stamp. */
+  seriesFetchedAt?: Partial<Record<EquitySeriesKey, number>>;
   name?: string;
   price?: number;
   changePercent?: number;

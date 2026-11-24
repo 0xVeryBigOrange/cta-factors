@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # Refresh the Yahoo Finance equity cache. GitHub may delay scheduled runs.
+    # Refresh the Yahoo Finance equity cache. GitHub may delay or drop scheduled
+    # runs, so the published JSON can be several hours behind this cron.
     - cron: "17 */2 * * *"
   workflow_dispatch:
 
