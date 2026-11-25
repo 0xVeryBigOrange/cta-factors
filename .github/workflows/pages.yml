@@ -5,8 +5,14 @@ on:
     branches: [main]
   schedule:
     # Refresh the Yahoo Finance equity cache. GitHub may delay or drop scheduled
-    # runs, so the published JSON can be several hours behind this cron.
-    - cron: "17 */2 * * *"
+    # runs, so the published JSON can still lag. Minute 17 is already off the
+    # hour; a 2026 sample of hourly workflows showed the same delay and about
+    # 8 runs/day at :00 and at other minutes, so shifting the minute or adding
+    # a second cron in the same hour does not buy more runs. This repo's
+    # previous every-two-hours cron produced about 3 runs/day (2026-11-22 to
+    # 2026-11-24). Hourly schedules in that sample still landed near 8/day,
+    # under the roughly 10/day plateau seen even for every-5-minutes crons.
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:

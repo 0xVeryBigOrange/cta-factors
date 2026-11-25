@@ -1,6 +1,6 @@
 import type { Timeframe } from "../types";
 
-/** While the cash session is open, a cache older than two missed cron slots is stale. */
+/** While the cash session is open, a cache older than 4 hours is stale. */
 export const EQUITY_OPEN_STALE_MS = 4 * 60 * 60 * 1000;
 /** After the cash close, wait long enough for an on-time refresh before warning. */
 export const EQUITY_CLOSE_GRACE_MS = 90 * 60 * 1000;
