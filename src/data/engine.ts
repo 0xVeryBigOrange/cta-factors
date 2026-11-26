@@ -352,12 +352,12 @@ class Engine {
     const updatedAt = Date.now();
     const next = { ...this.series };
     for (const tf of ["5m", "15m", "30m", "1h", "1d", "1w"] as const) {
-      const candles = rowsToCandles(file.series[tf]);
+      const candles = rowsToCandles(file.series[tf], tf, file.price);
       next[seriesKey(item, tf)] = candles.length
         ? { status: "ready", candles, source: "Yahoo Finance", updatedAt, asOf: candles.at(-1)?.time, cacheFetchedAt: cacheStamp(file, tf) }
         : { status: "empty", candles: [], source: "Yahoo Finance", updatedAt, final: true, error: "该周期没有数据" };
     }
-    const hourly = rowsToCandles(file.series["1h"]);
+    const hourly = rowsToCandles(file.series["1h"], "1h", file.price);
     const fourHour = hourly.length ? resample(hourly, timeframeMs("4h")) : [];
     next[seriesKey(item, "4h")] = fourHour.length
       ? {

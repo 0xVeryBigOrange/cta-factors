@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptPublishedEquity, mergeEquityFile, publishedEquityUrl, usableSeries, yahooShouldRetry } from "./equity-cache.mjs";
+import { acceptPublishedEquity, mergeEquityFile, normalizeYahooBars, publishedEquityUrl, usableSeries, yahooShouldRetry } from "./equity-cache.mjs";
 
 const previous = {
   symbol: "SPY",
@@ -74,6 +74,101 @@ describe("published equity cache", () => {
     expect(merged.file.seriesFetchedAt).toEqual({ "5m": 100, "1d": 100 });
     expect(merged.file.price).toBe(500);
     expect(merged.file.name).toBe("SPDR");
+  });
+});
+
+describe("yahoo close prints", () => {
+  const at = (iso) => Date.parse(iso);
+
+  it("drops a trailing zero-volume print and keeps the real intraday close", () => {
+    const bars = normalizeYahooBars(
+      [
+        [at("2026-11-25T20:55:00Z"), 716.74, 718.41, 716.15, 716.71, 3_693_325],
+        [at("2026-11-25T21:00:00Z"), 716.7, 716.7, 716.7, 716.7, 0],
+      ],
+      "5m",
+      716.7,
+    );
+    expect(bars).toEqual([[at("2026-11-25T20:55:00Z"), 716.74, 718.41, 716.15, 716.71, 3_693_325]]);
+  });
+
+  it("drops an in-session quote stamped at the fetch second", () => {
+    const bars = normalizeYahooBars(
+      [
+        [at("2026-11-25T20:25:00Z"), 716.03, 716.29, 715.58, 715.92, 281_388],
+        [at("2026-11-25T20:29:56Z"), 715.705, 715.705, 715.705, 715.705, 0],
+      ],
+      "1h",
+    );
+    expect(bars).toHaveLength(1);
+    expect(bars[0][0]).toBe(at("2026-11-25T20:25:00Z"));
+    expect(bars[0][4]).toBe(715.92);
+  });
+
+  it("keeps a zero-volume bar that still has a range, and a flat print that is not last", () => {
+    const rows = [
+      [at("2026-11-25T20:00:00Z"), 10, 10, 10, 10, 0],
+      [at("2026-11-25T20:30:00Z"), 10, 11, 9, 10.5, 0],
+    ];
+    expect(normalizeYahooBars(rows, "1h")).toEqual(rows);
+  });
+
+  it("fills a null daily close from the official price without moving a finished bar", () => {
+    const tuesday = [at("2026-11-24T14:30:00Z"), 715.15, 720.93, 712.14, 718.78, 64_343_200];
+    const bars = normalizeYahooBars(
+      [tuesday, [at("2026-11-25T14:30:00Z"), 703.2, 718.43, 695.45, null, 72_380_475]],
+      "1d",
+      716.7,
+    );
+    expect(bars[0]).toEqual(tuesday);
+    expect(bars[1]).toEqual([at("2026-11-25T14:30:00Z"), 703.2, 718.43, 695.45, 716.7, 72_380_475]);
+  });
+
+  it("extends the daily range when the official close is outside it", () => {
+    const bars = normalizeYahooBars([[1, 10, 11, 9, null, 100]], "1d", 12);
+    expect(bars).toEqual([[1, 10, 12, 9, 12, 100]]);
+  });
+
+  it("drops a bar that still has no close", () => {
+    const prior = [at("2026-11-24T14:30:00Z"), 10, 11, 9, 10.5, 100];
+    expect(normalizeYahooBars([prior, [at("2026-11-25T14:30:00Z"), 10, 11, 9, null, 80]], "1d")).toEqual([prior]);
+  });
+
+  it("folds the session Yahoo split off the weekly candle back into that week", () => {
+    const older = [at("2026-11-16T05:00:00Z"), 749.66, 749.82, 686.75, 689.81, 420_764_300];
+    const bars = normalizeYahooBars(
+      [
+        older,
+        [at("2026-11-23T05:00:00Z"), 724.33, 727.98, 712.14, 718.78, 152_627_000],
+        [at("2026-11-25T21:00:00Z"), 703.2, 718.43, 695.45, 716.7, 72_380_475],
+      ],
+      "1wk",
+      716.7,
+    );
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toEqual(older);
+    expect(bars[1]).toEqual([
+      at("2026-11-23T05:00:00Z"),
+      724.33,
+      727.98,
+      695.45,
+      716.7,
+      152_627_000 + 72_380_475,
+    ]);
+  });
+
+  it("leaves Monday-stamped weekly bars a week apart, including daylight time", () => {
+    const rows = [
+      [at("2026-11-16T05:00:00Z"), 749.66, 749.82, 686.75, 689.81, 420_764_300],
+      [at("2026-11-23T05:00:00Z"), 724.33, 727.98, 712.14, 718.78, 152_627_000],
+    ];
+    const summer = [
+      [at("2026-06-01T04:00:00Z"), 1, 2, 1, 1.5, 10],
+      [at("2026-06-08T04:00:00Z"), 1.5, 2, 1, 1.8, 12],
+    ];
+    expect(normalizeYahooBars(rows, "1w", 999)).toEqual(rows);
+    expect(normalizeYahooBars(summer, "1wk")).toEqual(summer);
+    expect(normalizeYahooBars(normalizeYahooBars(rows, "1wk"), "1wk")).toEqual(rows);
   });
 });
 

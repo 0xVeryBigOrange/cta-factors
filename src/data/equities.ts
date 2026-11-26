@@ -1,4 +1,5 @@
 import type { Candle, Timeframe } from "../types";
+import { normalizeYahooBars } from "../../scripts/equity-cache.mjs";
 import { fetchJson, gates } from "./http";
 import { sortCandles } from "./resample";
 
@@ -27,10 +28,15 @@ const YAHOO_PLAN: Record<EquitySeriesKey, { interval: string; range: string }> =
 
 const fileCache = new Map<string, EquityFile | null>();
 
-export function rowsToCandles(rows: number[][] | undefined): Candle[] {
-  if (!rows?.length) return [];
+export function rowsToCandles(
+  rows: ReadonlyArray<ReadonlyArray<number | null | undefined>> | undefined,
+  interval?: string,
+  regularMarketPrice?: number | null,
+): Candle[] {
+  const normalized = normalizeYahooBars(rows ?? [], interval, regularMarketPrice);
+  if (!normalized.length) return [];
   return sortCandles(
-    rows.map((row) => ({
+    normalized.map((row) => ({
       time: row[0],
       open: row[1],
       high: row[2],
@@ -41,7 +47,10 @@ export function rowsToCandles(rows: number[][] | undefined): Candle[] {
   );
 }
 
-export function parseYahooChart(payload: unknown): { candles: Candle[]; price?: number; changePercent?: number; name?: string } {
+export function parseYahooChart(
+  payload: unknown,
+  interval?: string,
+): { candles: Candle[]; price?: number; changePercent?: number; name?: string } {
   const result = (payload as { chart?: { result?: Array<Record<string, unknown>> } }).chart?.result?.[0];
   if (!result) return { candles: [] };
   const timestamp = result.timestamp as number[] | undefined;
@@ -49,26 +58,23 @@ export function parseYahooChart(payload: unknown): { candles: Candle[]; price?: 
   const meta = result.meta as
     | { regularMarketPrice?: number; regularMarketChangePercent?: number; shortName?: string; longName?: string }
     | undefined;
-  const candles: Candle[] = [];
+  const rows: Array<[number, number, number | null, number | null, number | null, number]> = [];
   if (timestamp && quote) {
     for (let i = 0; i < timestamp.length; i++) {
       const open = quote.open?.[i];
-      const high = quote.high?.[i];
-      const low = quote.low?.[i];
-      const close = quote.close?.[i];
-      if (open == null || high == null || low == null || close == null) continue;
-      candles.push({
-        time: timestamp[i] * 1000,
+      if (open == null) continue;
+      rows.push([
+        timestamp[i] * 1000,
         open,
-        high,
-        low,
-        close,
-        volume: quote.volume?.[i] ?? 0,
-      });
+        quote.high?.[i] ?? null,
+        quote.low?.[i] ?? null,
+        quote.close?.[i] ?? null,
+        quote.volume?.[i] ?? 0,
+      ]);
     }
   }
   return {
-    candles: sortCandles(candles),
+    candles: rowsToCandles(rows, interval, meta?.regularMarketPrice),
     price: meta?.regularMarketPrice,
     changePercent: meta?.regularMarketChangePercent,
     name: meta?.longName || meta?.shortName,
@@ -104,5 +110,5 @@ export async function fetchYahooCandles(symbol: string, tf: Timeframe, signal?: 
   if (!plan || !import.meta.env.DEV) return [];
   const url = `/yahoo/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${plan.interval}&range=${plan.range}&includePrePost=false`;
   const payload = await fetchJson(url, { source: "yahoo", gate: gates.yahoo, signal });
-  return parseYahooChart(payload).candles;
+  return parseYahooChart(payload, key).candles;
 }

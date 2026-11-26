@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptPublishedEquity, mergeEquityFile, publishedEquityUrl, usableSeries, yahooShouldRetry } from "./equity-cache.mjs";
+import { acceptPublishedEquity, mergeEquityFile, normalizeYahooBars, publishedEquityUrl, usableSeries, yahooShouldRetry } from "./equity-cache.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "public", "data", "equities");
@@ -52,15 +52,27 @@ async function yahoo(symbol, interval, range) {
       const result = payload.chart?.result?.[0];
       if (!result?.timestamp) throw new Error(payload.chart?.error?.description || `empty ${interval}`);
       const quote = result.indicators.quote[0];
-      const rows = [];
+      const raw = [];
       for (let i = 0; i < result.timestamp.length; i++) {
         const open = quote.open?.[i];
-        const high = quote.high?.[i];
-        const low = quote.low?.[i];
-        const close = quote.close?.[i];
-        if (open == null || high == null || low == null || close == null) continue;
-        rows.push([result.timestamp[i] * 1000, round(open), round(high), round(low), round(close), quote.volume?.[i] ?? 0]);
+        if (open == null) continue;
+        raw.push([
+          result.timestamp[i] * 1000,
+          open,
+          quote.high?.[i],
+          quote.low?.[i],
+          quote.close?.[i],
+          quote.volume?.[i] ?? 0,
+        ]);
       }
+      const rows = normalizeYahooBars(raw, interval, result.meta?.regularMarketPrice).map((row) => [
+        row[0],
+        round(row[1]),
+        round(row[2]),
+        round(row[3]),
+        round(row[4]),
+        row[5],
+      ]);
       return {
         rows,
         name: result.meta?.longName || result.meta?.shortName,
