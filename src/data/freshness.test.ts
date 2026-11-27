@@ -46,7 +46,7 @@ describe("equity cache freshness", () => {
     const now = Date.parse("2026-11-24T01:18:00Z");
     const status = equityCacheFreshness(fetchedAt, now, fetchedAt);
     expect(status.stale).toBe(true);
-    expect(status.message).toContain("早于最近一次常规收盘");
+    expect(status.message).toContain("早于最近一次收盘");
   });
 
   it("waits through the post-close grace period", () => {
@@ -64,14 +64,62 @@ describe("equity cache freshness", () => {
   });
 
   it("warns over the weekend when Friday's close was never captured", () => {
-    const status = equityCacheFreshness(Date.parse("2026-11-27T20:00:00Z"), Date.parse("2026-11-28T15:00:00Z"));
+    const status = equityCacheFreshness(Date.parse("2026-11-20T20:00:00Z"), Date.parse("2026-11-21T15:00:00Z"));
     expect(status.stale).toBe(true);
+  });
+
+  it("stays quiet on Thanksgiving when Wednesday's close was captured", () => {
+    const fetchedAt = Date.parse("2026-11-25T21:30:00Z");
+    const now = Date.parse("2026-11-26T20:00:00Z");
+    const status = equityCacheFreshness(fetchedAt, now, Date.parse("2026-11-25T20:55:00Z"));
+    expect(status.stale).toBe(false);
+    expect(status.message).toBeNull();
+  });
+
+  it("still warns on a holiday when the previous close was missed", () => {
+    const status = equityCacheFreshness(Date.parse("2026-11-25T18:00:00Z"), Date.parse("2026-11-26T20:00:00Z"));
+    expect(status.stale).toBe(true);
+    expect(status.message).toContain("早于最近一次收盘");
+    expect(status.message).not.toContain("盘中");
+  });
+
+  it("uses 13:00 New York on the published early closes", () => {
+    expect(new Date(lastRegularClose(Date.parse("2026-11-27T13:00:00Z"))).toISOString()).toBe("2026-11-25T21:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2026-11-27T18:30:00Z"))).toISOString()).toBe("2026-11-27T18:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2026-12-24T18:30:00Z"))).toISOString()).toBe("2026-12-24T18:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2026-12-25T18:00:00Z"))).toISOString()).toBe("2026-12-24T18:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2027-11-26T18:30:00Z"))).toISOString()).toBe("2027-11-26T18:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2028-07-03T17:30:00Z"))).toISOString()).toBe("2028-07-03T17:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2028-11-24T18:30:00Z"))).toISOString()).toBe("2028-11-24T18:00:00.000Z");
+  });
+
+  it("does not invent an early close the day before an observed Friday holiday", () => {
+    expect(new Date(lastRegularClose(Date.parse("2026-07-02T20:30:00Z"))).toISOString()).toBe("2026-07-02T20:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2026-07-03T18:00:00Z"))).toISOString()).toBe("2026-07-02T20:00:00.000Z");
+    expect(new Date(lastRegularClose(Date.parse("2027-12-24T18:00:00Z"))).toISOString()).toBe("2027-12-23T21:00:00.000Z");
+  });
+
+  it("accepts a cache taken after the 13:00 early close, including over the weekend", () => {
+    const fetchedAt = Date.parse("2026-11-27T18:30:00Z");
+    const duringAfternoon = equityCacheFreshness(fetchedAt, Date.parse("2026-11-27T20:00:00Z"), Date.parse("2026-11-27T17:55:00Z"));
+    expect(duringAfternoon.stale).toBe(false);
+    expect(duringAfternoon.message).toBeNull();
+    expect(equityCacheFreshness(fetchedAt, Date.parse("2026-11-28T15:00:00Z"), fetchedAt).stale).toBe(false);
+  });
+
+  it("warns after the early close when that close was missed", () => {
+    const fetchedAt = Date.parse("2026-11-27T17:00:00Z");
+    const close = Date.parse("2026-11-27T18:00:00Z");
+    expect(equityCacheFreshness(fetchedAt, close + 90 * MIN - 1, fetchedAt).stale).toBe(false);
+    const status = equityCacheFreshness(fetchedAt, close + 90 * MIN, fetchedAt);
+    expect(status.stale).toBe(true);
+    expect(status.message).toContain("早于最近一次收盘");
   });
 
   it("warns in summer time when the snapshot is from before the close", () => {
     const status = equityCacheFreshness(Date.parse("2026-06-15T19:00:00Z"), Date.parse("2026-06-15T21:30:00Z"));
     expect(status.stale).toBe(true);
-    expect(status.message).toContain("早于最近一次常规收盘");
+    expect(status.message).toContain("早于最近一次收盘");
   });
 
   it("warns after the open when intraday bars are still from the previous session", () => {

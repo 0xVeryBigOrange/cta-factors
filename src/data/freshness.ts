@@ -6,6 +6,53 @@ export const EQUITY_OPEN_STALE_MS = 4 * 60 * 60 * 1000;
 export const EQUITY_CLOSE_GRACE_MS = 90 * 60 * 1000;
 const OPEN_MINUTE = 9 * 60 + 30;
 const CLOSE_MINUTE = 16 * 60;
+const EARLY_CLOSE_MINUTE = 13 * 60;
+
+/**
+ * NYSE cash-market full closures, America/New_York dates.
+ * Source: https://www.nyse.com/markets/hours-calendars (2026–2028).
+ * January 1, 2028 falls on Saturday and is not observed.
+ */
+const NYSE_CLOSED = new Set([
+  "2026-01-01",
+  "2026-01-19",
+  "2026-02-16",
+  "2026-04-03",
+  "2026-05-25",
+  "2026-06-19",
+  "2026-07-03",
+  "2026-09-07",
+  "2026-11-26",
+  "2026-12-25",
+  "2027-01-01",
+  "2027-01-18",
+  "2027-02-15",
+  "2027-03-26",
+  "2027-05-31",
+  "2027-06-18",
+  "2027-07-05",
+  "2027-09-06",
+  "2027-11-25",
+  "2027-12-24",
+  "2028-01-17",
+  "2028-02-21",
+  "2028-04-14",
+  "2028-05-29",
+  "2028-06-19",
+  "2028-07-04",
+  "2028-09-04",
+  "2028-11-23",
+  "2028-12-25",
+]);
+
+/** Published 13:00 America/New_York equity early closes for 2026–2028. */
+const NYSE_EARLY_CLOSE = new Set([
+  "2026-11-27",
+  "2026-12-24",
+  "2027-11-26",
+  "2028-07-03",
+  "2028-11-24",
+]);
 const INTRADAY = new Set<Timeframe>(["5m", "15m", "30m", "1h", "4h"]);
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -70,16 +117,34 @@ function previousDate(year: number, month: number, day: number): { year: number;
   return { year: prev.getUTCFullYear(), month: prev.getUTCMonth() + 1, day: prev.getUTCDate() };
 }
 
-/** Most recent weekday 16:00 America/New_York that is already in the past, as UTC ms. */
+function dateKey(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Cash close in minutes from midnight, or null when the NYSE cash market is shut. */
+function cashCloseMinute(year: number, month: number, day: number): number | null {
+  const weekday = new Date(Date.UTC(year, month - 1, day, 12)).getUTCDay();
+  if (weekday === 0 || weekday === 6) return null;
+  const key = dateKey(year, month, day);
+  if (NYSE_CLOSED.has(key)) return null;
+  if (NYSE_EARLY_CLOSE.has(key)) return EARLY_CLOSE_MINUTE;
+  return CLOSE_MINUTE;
+}
+
+/**
+ * Most recent NYSE cash close already in the past, as UTC ms.
+ * Regular days use 16:00 America/New_York. Published early closes use 13:00.
+ * Full holidays are skipped. Dates after 2028 follow the weekday schedule.
+ */
 export function lastRegularClose(now: number): number {
   const parts = nyParts(now);
   let date = { year: parts.year, month: parts.month, day: parts.day };
-  const closeAlreadyToday = parts.weekday >= 1 && parts.weekday <= 5 && parts.minutes >= CLOSE_MINUTE;
-  if (!closeAlreadyToday) date = previousDate(date.year, date.month, date.day);
-  for (let guard = 0; guard < 7; guard += 1) {
-    const close = nyCivilToUtc(date.year, date.month, date.day, CLOSE_MINUTE);
-    const weekday = nyParts(close).weekday;
-    if (weekday >= 1 && weekday <= 5 && close <= now) return close;
+  for (let guard = 0; guard < 14; guard += 1) {
+    const closeMinute = cashCloseMinute(date.year, date.month, date.day);
+    if (closeMinute != null) {
+      const close = nyCivilToUtc(date.year, date.month, date.day, closeMinute);
+      if (close <= now) return close;
+    }
     date = previousDate(date.year, date.month, date.day);
   }
   return nyCivilToUtc(parts.year, parts.month, parts.day, CLOSE_MINUTE);
@@ -98,8 +163,9 @@ function finite(value: number | undefined): value is number {
 
 /**
  * Decide whether a published Yahoo equity cache is too old to treat as current.
- * The regular session is weekday 09:30–16:00 America/New_York. Holidays are not
- * special-cased. `fetchedAt` should be the oldest series in the file.
+ * The cash session is 09:30–16:00 America/New_York on weekdays, except published
+ * full holidays (no session) and 13:00 early closes. `fetchedAt` should be the
+ * oldest series in the file.
  */
 export function equityCacheFreshness(
   fetchedAt: number,
@@ -109,7 +175,8 @@ export function equityCacheFreshness(
   if (!finite(fetchedAt)) return { stale: false, ageMs: Number.NaN, message: null };
   const ageMs = Math.max(0, now - fetchedAt);
   const parts = nyParts(now);
-  const sessionOpen = parts.weekday >= 1 && parts.weekday <= 5 && parts.minutes >= OPEN_MINUTE && parts.minutes < CLOSE_MINUTE;
+  const closeMinute = cashCloseMinute(parts.year, parts.month, parts.day);
+  const sessionOpen = closeMinute != null && parts.minutes >= OPEN_MINUTE && parts.minutes < closeMinute;
   const openUtc = nyCivilToUtc(parts.year, parts.month, parts.day, OPEN_MINUTE);
   const barsBeforeOpen = finite(latestIntradayBar) && latestIntradayBar < openUtc;
   const age = formatCacheAge(ageMs);
@@ -132,7 +199,7 @@ export function equityCacheFreshness(
     return {
       stale: true,
       ageMs,
-      message: `美股 K 线缓存早于最近一次常规收盘（已 ${age}），收盘段还没写进因子。报价可以更新。`,
+      message: `美股 K 线缓存早于最近一次收盘（已 ${age}），收盘段还没写进因子。报价可以更新。`,
     };
   }
   return { stale: false, ageMs, message: null };
