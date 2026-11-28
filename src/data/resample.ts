@@ -1,12 +1,13 @@
 import type { Candle } from "../types";
 
-export function resample(candles: Candle[], bucketMs: number): Candle[] {
+/** `anchorMs` shifts the bucket grid. Weekly bars use Monday 00:00 UTC. */
+export function resample(candles: Candle[], bucketMs: number, anchorMs = 0): Candle[] {
   const sorted = [...candles].sort((a, b) => a.time - b.time);
   const out: Candle[] = [];
   let current: Candle | null = null;
   let bucket = -1;
   for (const candle of sorted) {
-    const nextBucket = Math.floor(candle.time / bucketMs) * bucketMs;
+    const nextBucket = Math.floor((candle.time - anchorMs) / bucketMs) * bucketMs + anchorMs;
     if (!current || nextBucket !== bucket) {
       if (current) out.push(current);
       bucket = nextBucket;
