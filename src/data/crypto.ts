@@ -217,22 +217,77 @@ async function fromCoinbase(base: string, tf: Timeframe, signal?: AbortSignal): 
   );
 }
 
+const DAY_MS = 24 * 60 * 60_000;
+/** Unix epoch is Thursday, so this lands weekly buckets on Monday 00:00 UTC. */
+const MONDAY_UTC_MS = 4 * DAY_MS;
+
+/**
+ * One candle per UTC day from CoinGecko `/market_chart?interval=daily`.
+ * That series is midnight prices plus a trailing intraday print of "now".
+ * The print is the same day, so it updates the close instead of becoming its own bar.
+ * Volume is the latest 24h total for that day, not the sum of the two prints.
+ */
+export function coinGeckoDailyCandles(prices: unknown, volumes: unknown): Candle[] {
+  const volumeAt = new Map<number, number>();
+  if (Array.isArray(volumes)) {
+    for (const row of volumes) {
+      if (!Array.isArray(row)) continue;
+      const time = Number(row[0]);
+      const volume = Number(row[1]);
+      if (Number.isFinite(time) && Number.isFinite(volume) && volume > 0) volumeAt.set(time, volume);
+    }
+  }
+  const days = new Map<number, Candle>();
+  if (Array.isArray(prices)) {
+    const rows = prices.filter((row): row is unknown[] => Array.isArray(row));
+    rows.sort((a, b) => Number(a[0]) - Number(b[0]));
+    for (const row of rows) {
+      const time = Number(row[0]);
+      const price = Number(row[1]);
+      if (!Number.isFinite(time) || !(price > 0)) continue;
+      const day = Math.floor(time / DAY_MS) * DAY_MS;
+      const volume = volumeAt.get(time) ?? 0;
+      const existing = days.get(day);
+      if (!existing) {
+        days.set(day, { time: day, open: price, high: price, low: price, close: price, volume });
+      } else {
+        existing.high = Math.max(existing.high, price);
+        existing.low = Math.min(existing.low, price);
+        existing.close = price;
+        if (volume > 0) existing.volume = volume;
+      }
+    }
+  }
+  return sortCandles([...days.values()]);
+}
+
 async function fromCoinGecko(base: string, tf: Timeframe, signal?: AbortSignal): Promise<Candle[]> {
   if (tf === "5m" || tf === "15m" || tf === "30m" || tf === "1h") return [];
   const id = GECKO_IDS[base];
   if (!id) return [];
-  const days = tf === "4h" ? 30 : 180;
-  const url = `https://api.coingecko.com/api/v3/coins/${id}/ohlc?vs_currency=usd&days=${days}`;
-  const data = await fetchJson(url, { source: "coingecko", gate: gates.gecko, signal });
-  if (!Array.isArray(data)) return [];
-  let candles = sortCandles(
-    data.flatMap((row) => {
-      if (!Array.isArray(row)) return [];
-      const candle = makeCandle(Number(row[0]), row[1], row[2], row[3], row[4], 0);
-      return candle ? [candle] : [];
-    }),
-  );
-  if (tf === "1w") candles = resample(candles, timeframeMs("1w"));
+  // OHLC with days >= 31 is a 4-day candle. Daily spacing then fails the
+  // 0.45×–2.2× check, so the documented daily fallback never returned bars.
+  // days=30 is still 4-hour OHLC and stays the 4h path. Daily and weekly use
+  // the daily market chart (about a year) instead.
+  if (tf === "4h") {
+    const url = `https://api.coingecko.com/api/v3/coins/${id}/ohlc?vs_currency=usd&days=30`;
+    const data = await fetchJson(url, { source: "coingecko", gate: gates.gecko, signal });
+    if (!Array.isArray(data)) return [];
+    return sortCandles(
+      data.flatMap((row) => {
+        if (!Array.isArray(row)) return [];
+        const candle = makeCandle(Number(row[0]), row[1], row[2], row[3], row[4], 0);
+        return candle ? [candle] : [];
+      }),
+    );
+  }
+  const url = `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=365&interval=daily`;
+  const data = (await fetchJson(url, { source: "coingecko", gate: gates.gecko, signal })) as {
+    prices?: unknown;
+    total_volumes?: unknown;
+  };
+  const candles = coinGeckoDailyCandles(data?.prices, data?.total_volumes);
+  if (tf === "1w") return resample(candles, timeframeMs("1w"), MONDAY_UTC_MS);
   return candles;
 }
 

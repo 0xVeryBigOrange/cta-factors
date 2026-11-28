@@ -20,6 +20,23 @@ describe("resample", () => {
     expect(out[0].low).toBe(9);
     expect(out[0].volume).toBe(20);
   });
+
+  it("anchors weekly buckets to Monday when asked", () => {
+    const monday = Date.UTC(2024, 0, 1);
+    const bars = [0, 6, 7].map((day) => ({
+      time: monday + day * 86_400_000,
+      open: 10 + day,
+      high: 10 + day,
+      low: 10 + day,
+      close: 10 + day,
+      volume: 1,
+    }));
+    const out = resample(bars, 7 * 86_400_000, 4 * 86_400_000);
+    expect(out.map((bar) => bar.time)).toEqual([monday, monday + 7 * 86_400_000]);
+    expect(out[0].open).toBe(10);
+    expect(out[0].close).toBe(16);
+    expect(out[1].open).toBe(17);
+  });
 });
 
 describe("tencent parsers", () => {
